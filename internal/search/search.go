@@ -35,8 +35,10 @@ func NewSearcher(cfg *config.Config, token string, q *Queue) *Searcher {
 
 func (s *Searcher) query(qs string, page int) ([]Repo, error) {
 	s.bucket.Take()
-	endpoint := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&sort=updated&per_page=100&page=%d",
-		url.QueryEscape(qs), page)
+	endpoint := fmt.Sprintf(
+		"https://api.github.com/search/repositories?q=%s&sort=updated&per_page=100&page=%d",
+		url.QueryEscape(qs), page,
+	)
 	req, _ := http.NewRequest("GET", endpoint, nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+s.token)
@@ -84,12 +86,23 @@ func (s *Searcher) Run(ctx context.Context) error {
 				if s.queue.Seen(r.FullName) {
 					continue
 				}
+
 				target := r.SSHURL
 				if s.cfg.Search.ForkInsteadOfClone {
 					target = fmt.Sprintf("https://github.com/%s", r.FullName)
 				}
+
+				// 1) enqueue for mirror/fork
 				_ = s.queue.Enqueue(ctx, target)
 				s.queue.Mark(r.FullName)
+
+				// 2) send a Discord notification
+				msg := fmt.Sprintf(
+					"New repo queued: **%s**\nStars: %d  Pushed: %s\nURL: %s",
+					r.FullName, r.Stars, r.PushedAt.Format("2006-01-02"), target,
+				)
+				discordURL := s.cfg.Discord.WebhookURL
+				_ = util.SendWebhook(discordURL, msg)
 			}
 			if page*s.cfg.Search.MaxReposPerKeyword >= 100 {
 				break
