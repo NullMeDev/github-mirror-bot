@@ -2,7 +2,7 @@ github:
   token_env: GITHUB_TOKEN
 
 search:
-  keywords: ["proxy", "bot", "keygen", "cracker", "scraper", "crawler"]
+  keywords: ["proxy", "bot", "keygen", "cracker", "scraper", "crawler", "vulnerability", "exploit"]
   languages: ["go", "rust", "python", "c"]
   max_repos_per_keyword: 50
   fork_instead_of_clone: true
@@ -14,5 +14,8 @@ filter:
 
 storage:
   local_dir: /home/gitbackup/github-mirror
-  remote: gdrive:github-mirror
+  remote: my2tb:github-mirror
   offload_after_minutes: 5
+
+discord:
+  webhook_url: "https://discord.com/api/webhooks/XXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
