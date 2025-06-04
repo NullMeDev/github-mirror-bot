@@ -32,7 +32,7 @@ while true; do
     ((page++))
 done
 
-# off-load to Google Drive and prune local
-/usr/bin/rclone move "$BACKUP_DIR" "gdrive:github-mirror" --delete-after --transfers=8 --checkers=16 --fast-list
+# off-load to Google Drive (2 TB) and prune local
+/usr/bin/rclone move "$BACKUP_DIR" "my2tb:github-mirror" --delete-after --transfers=8 --checkers=16 --fast-list
 
 echo "Backup complete in $BACKUP_DIR"
