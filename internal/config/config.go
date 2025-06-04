@@ -27,6 +27,9 @@ type Config struct {
 		Remote              string `yaml:"remote"`
 		OffloadAfterMinutes int    `yaml:"offload_after_minutes"`
 	} `yaml:"storage"`
+	Discord struct {
+		WebhookURL string `yaml:"webhook_url"`
+	} `yaml:"discord"`
 }
 
 func Load(path string) (*Config, error) {
