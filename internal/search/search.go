@@ -131,8 +131,9 @@ func (s *Searcher) Run(ctx context.Context) error {
 	}
 
 	// Send summary to Discord
-	if s.cfg.Discord.EnableNotifications && s.cfg.Discord.WebhookURL != "" {
-		s.sendSummaryToDiscord(ctx)
+	webhookURL := s.cfg.GetDiscordWebhookURL()
+	if s.cfg.Discord.EnableNotifications && webhookURL != "" {
+		s.sendSummaryToDiscord(ctx, webhookURL)
 	}
 
 	log.Println("Search cycle completed")
@@ -219,8 +220,9 @@ func (s *Searcher) processRepo(ctx context.Context, r Repo) error {
 	s.foundRepos = append(s.foundRepos, repoInfo)
 
 	// Send individual notification if not batching
-	if s.cfg.Discord.EnableNotifications && s.cfg.Discord.WebhookURL != "" && !s.cfg.Discord.BatchSummary {
-		if err := util.SendRepoNotification(ctx, s.cfg.Discord.WebhookURL, repoInfo); err != nil {
+	webhookURL := s.cfg.GetDiscordWebhookURL()
+	if s.cfg.Discord.EnableNotifications && webhookURL != "" && !s.cfg.Discord.BatchSummary {
+		if err := util.SendRepoNotification(ctx, webhookURL, repoInfo); err != nil {
 			log.Printf("Failed to send Discord notification: %v", err)
 		}
 	}
@@ -229,7 +231,7 @@ func (s *Searcher) processRepo(ctx context.Context, r Repo) error {
 	return nil
 }
 
-func (s *Searcher) sendSummaryToDiscord(ctx context.Context) {
+func (s *Searcher) sendSummaryToDiscord(ctx context.Context, webhookURL string) {
 	if !s.cfg.Discord.BatchSummary || len(s.foundRepos) == 0 {
 		return
 	}
@@ -253,7 +255,7 @@ func (s *Searcher) sendSummaryToDiscord(ctx context.Context) {
 		Duration:      time.Since(s.startTime),
 	}
 
-	if err := util.SendBackupSummary(ctx, s.cfg.Discord.WebhookURL, summary, s.cfg.Discord.MaxMessageLength); err != nil {
+	if err := util.SendBackupSummary(ctx, webhookURL, summary, s.cfg.Discord.MaxMessageLength); err != nil {
 		log.Printf("Failed to send Discord summary: %v", err)
 	}
 }
