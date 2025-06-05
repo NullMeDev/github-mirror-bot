@@ -1,0 +1,5 @@
+.env
+*.log
+/logs/
+config/env
+.config/
