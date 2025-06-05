@@ -362,3 +362,13 @@ Join our Discord server for community support
 ---
 
 ⚠️ Disclaimer: This tool is for educational and backup purposes. Ensure you comply with GitHub's Terms of Service and respect repository licenses when using this bot.
+
+<p align="center">
+Contributions are welcome, either request here, or email me at null@nullme.dev! Please feel free to submit a pull request.
+</p>
+<p align="center">
+Consider donating at https://ko-fi.com/NullMeDev
+</p>
+<p align="center">
+Made With &#x1F49C by NullMeDev.</p>
+
