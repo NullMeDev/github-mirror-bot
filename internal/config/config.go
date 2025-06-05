@@ -28,15 +28,15 @@ type Config struct {
 		OffloadAfterMinutes int    `yaml:"offload_after_minutes"`
 	} `yaml:"storage"`
 	Discord struct {
-		WebhookURL          string `yaml:"webhook_url"`
+		WebhookURLEnv       string `yaml:"webhook_url_env"`
 		EnableNotifications bool   `yaml:"enable_notifications"`
 		BatchSummary        bool   `yaml:"batch_summary"`
 		MaxMessageLength    int    `yaml:"max_message_length"`
 	} `yaml:"discord"`
 	Redis struct {
-		Address  string `yaml:"address"`
-		Password string `yaml:"password"`
-		DB       int    `yaml:"db"`
+		Address     string `yaml:"address"`
+		PasswordEnv string `yaml:"password_env"`
+		DB          int    `yaml:"db"`
 	} `yaml:"redis"`
 	Logging struct {
 		Level string `yaml:"level"`
@@ -67,10 +67,34 @@ func Load(path string) (*Config, error) {
 	if c.Discord.MaxMessageLength == 0 {
 		c.Discord.MaxMessageLength = 1900
 	}
+	if c.GitHub.TokenEnv == "" {
+		c.GitHub.TokenEnv = "GITHUB_TOKEN"
+	}
+	if c.Discord.WebhookURLEnv == "" {
+		c.Discord.WebhookURLEnv = "DISCORD_WEBHOOK_URL"
+	}
+	if c.Redis.PasswordEnv == "" {
+		c.Redis.PasswordEnv = "REDIS_PASSWORD"
+	}
 	
 	return &c, nil
 }
 
 func (c *Config) MaxInactive() time.Duration {
 	return time.Duration(c.Filter.MaxInactiveMonths) * 30 * 24 * time.Hour
+}
+
+// GetGitHubToken retrieves the GitHub token from environment
+func (c *Config) GetGitHubToken() string {
+	return os.Getenv(c.GitHub.TokenEnv)
+}
+
+// GetDiscordWebhookURL retrieves the Discord webhook URL from environment
+func (c *Config) GetDiscordWebhookURL() string {
+	return os.Getenv(c.Discord.WebhookURLEnv)
+}
+
+// GetRedisPassword retrieves the Redis password from environment
+func (c *Config) GetRedisPassword() string {
+	return os.Getenv(c.Redis.PasswordEnv)
 }
