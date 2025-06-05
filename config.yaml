@@ -1,5 +1,5 @@
 github:
-  token_env: GITHUB_TOKEN
+  token_env: GITHUB_TOKEN  # References environment variable
 
 search:
   keywords: ["proxy", "bot", "keygen", "cracker", "scraper", "crawler", "vulnerability", "exploit"]
@@ -18,14 +18,14 @@ storage:
   offload_after_minutes: 5
 
 discord:
-  webhook_url: "https://discord.com/api/webhooks/XXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  webhook_url_env: DISCORD_WEBHOOK_URL  # References environment variable
   enable_notifications: true
-  batch_summary: true  # Send summary of all repos found in one message
-  max_message_length: 1900  # Discord limit is 2000, leave some buffer
+  batch_summary: true
+  max_message_length: 1900
 
 redis:
   address: "127.0.0.1:6379"
-  password: ""
+  password_env: REDIS_PASSWORD  # References environment variable
   db: 0
 
 logging:
