@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/NullMeDev/github-mirror-bot/internal/config"
@@ -14,11 +15,13 @@ import (
 )
 
 type Repo struct {
-	FullName string    `json:"full_name"`
-	SSHURL   string    `json:"ssh_url"`
-	HTMLURL  string    `json:"html_url"`
-	Stars    int       `json:"stargazers_count"`
-	PushedAt time.Time `json:"pushed_at"`
+	FullName    string    `json:"full_name"`
+	SSHURL      string    `json:"ssh_url"`
+	HTMLURL     string    `json:"html_url"`
+	Stars       int       `json:"stargazers_count"`
+	PushedAt    time.Time `json:"pushed_at"`
+	Description string    `json:"description"`
+	Language    string    `json:"language"`
 }
 
 type SearchResponse struct {
@@ -27,11 +30,13 @@ type SearchResponse struct {
 }
 
 type Searcher struct {
-	cfg    *config.Config
-	token  string
-	bucket *util.TokenBucket
-	queue  *Queue
-	client *http.Client
+	cfg         *config.Config
+	token       string
+	bucket      *util.TokenBucket
+	queue       *Queue
+	client      *http.Client
+	foundRepos  []util.RepoInfo
+	startTime   time.Time
 }
 
 func NewSearcher(cfg *config.Config, token string, q *Queue) *Searcher {
@@ -39,13 +44,14 @@ func NewSearcher(cfg *config.Config, token string, q *Queue) *Searcher {
 	b.Start()
 	
 	return &Searcher{
-		cfg:    cfg,
-		token:  token,
-		bucket: b,
-		queue:  q,
+		cfg:        cfg,
+		token:      token,
+		bucket:     b,
+		queue:      q,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		foundRepos: make([]util.RepoInfo, 0),
 	}
 }
 
@@ -101,6 +107,9 @@ func (s *Searcher) BuildQueries() []string {
 }
 
 func (s *Searcher) Run(ctx context.Context) error {
+	s.startTime = time.Now()
+	s.foundRepos = make([]util.RepoInfo, 0)
+	
 	log.Println("Starting search cycle...")
 	
 	queries := s.BuildQueries()
@@ -119,6 +128,11 @@ func (s *Searcher) Run(ctx context.Context) error {
 			log.Printf("Error processing query '%s': %v", qs, err)
 			continue
 		}
+	}
+
+	// Send summary to Discord
+	if s.cfg.Discord.EnableNotifications && s.cfg.Discord.WebhookURL != "" {
+		s.sendSummaryToDiscord(ctx)
 	}
 
 	log.Println("Search cycle completed")
@@ -178,27 +192,86 @@ func (s *Searcher) processRepo(ctx context.Context, r Repo) error {
 		target = r.HTMLURL
 	}
 
+	// Create repo info for Discord
+	repoInfo := util.RepoInfo{
+		Name:        r.FullName,
+		Description: s.cleanDescription(r.Description),
+		Stars:       r.Stars,
+		Language:    r.Language,
+		URL:         r.HTMLURL,
+		BackedUp:    false,
+	}
+
 	// Enqueue for mirror/fork
 	if err := s.queue.Enqueue(ctx, target); err != nil {
+		repoInfo.Error = err.Error()
+		s.foundRepos = append(s.foundRepos, repoInfo)
 		return fmt.Errorf("failed to enqueue repo: %w", err)
 	}
 
 	if err := s.queue.Mark(ctx, r.FullName); err != nil {
+		repoInfo.Error = err.Error()
+		s.foundRepos = append(s.foundRepos, repoInfo)
 		return fmt.Errorf("failed to mark repo as seen: %w", err)
 	}
 
-	// Send Discord notification
-	if s.cfg.Discord.WebhookURL != "" {
-		msg := fmt.Sprintf(
-			"New repo queued: **%s**\nStars: %d  Pushed: %s\nURL: %s",
-			r.FullName, r.Stars, r.PushedAt.Format("2006-01-02"), target,
-		)
-		
-		if err := util.SendWebhook(ctx, s.cfg.Discord.WebhookURL, msg); err != nil {
+	repoInfo.BackedUp = true
+	s.foundRepos = append(s.foundRepos, repoInfo)
+
+	// Send individual notification if not batching
+	if s.cfg.Discord.EnableNotifications && s.cfg.Discord.WebhookURL != "" && !s.cfg.Discord.BatchSummary {
+		if err := util.SendRepoNotification(ctx, s.cfg.Discord.WebhookURL, repoInfo); err != nil {
 			log.Printf("Failed to send Discord notification: %v", err)
 		}
 	}
 
 	log.Printf("Queued repo: %s (stars: %d)", r.FullName, r.Stars)
 	return nil
+}
+
+func (s *Searcher) sendSummaryToDiscord(ctx context.Context) {
+	if !s.cfg.Discord.BatchSummary || len(s.foundRepos) == 0 {
+		return
+	}
+
+	totalBackedUp := 0
+	totalFailed := 0
+	
+	for _, repo := range s.foundRepos {
+		if repo.BackedUp {
+			totalBackedUp++
+		} else {
+			totalFailed++
+		}
+	}
+
+	summary := util.BackupSummary{
+		TotalFound:    len(s.foundRepos),
+		TotalBackedUp: totalBackedUp,
+		TotalFailed:   totalFailed,
+		Repos:         s.foundRepos,
+		Duration:      time.Since(s.startTime),
+	}
+
+	if err := util.SendBackupSummary(ctx, s.cfg.Discord.WebhookURL, summary, s.cfg.Discord.MaxMessageLength); err != nil {
+		log.Printf("Failed to send Discord summary: %v", err)
+	}
+}
+
+func (s *Searcher) cleanDescription(desc string) string {
+	if desc == "" {
+		return "No description available"
+	}
+	
+	// Clean up common unwanted characters and normalize whitespace
+	cleaned := strings.ReplaceAll(desc, "\n", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\r", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\t", " ")
+	
+	// Remove multiple spaces
+	for strings.Contains(cleaned, "  ") {
+		cleaned = strings.ReplaceAll(cleaned, "  ", " ")
+	}
+	
+	return strings.TrimSpace(cleaned)
 }
