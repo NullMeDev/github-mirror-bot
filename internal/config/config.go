@@ -28,7 +28,10 @@ type Config struct {
 		OffloadAfterMinutes int    `yaml:"offload_after_minutes"`
 	} `yaml:"storage"`
 	Discord struct {
-		WebhookURL string `yaml:"webhook_url"`
+		WebhookURL          string `yaml:"webhook_url"`
+		EnableNotifications bool   `yaml:"enable_notifications"`
+		BatchSummary        bool   `yaml:"batch_summary"`
+		MaxMessageLength    int    `yaml:"max_message_length"`
 	} `yaml:"discord"`
 	Redis struct {
 		Address  string `yaml:"address"`
@@ -60,6 +63,9 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
+	}
+	if c.Discord.MaxMessageLength == 0 {
+		c.Discord.MaxMessageLength = 1900
 	}
 	
 	return &c, nil
