@@ -8,12 +8,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
 	"github.com/NullMeDev/github-mirror-bot/internal/config"
 	"github.com/NullMeDev/github-mirror-bot/internal/search"
 )
 
 func main() {
+	// Load .env file if it exists
+	if err := godotenv.Load(); err != nil {
+		log.Printf("No .env file found or error loading it: %v", err)
+	}
+
 	// Load configuration
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
@@ -25,10 +31,18 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Get GitHub token
-	token := os.Getenv(cfg.GitHub.TokenEnv)
+	// Get GitHub token from environment
+	token := cfg.GetGitHubToken()
 	if token == "" {
 		log.Fatalf("GitHub token not found in environment variable: %s", cfg.GitHub.TokenEnv)
+	}
+
+	// Validate Discord webhook URL if notifications are enabled
+	if cfg.Discord.EnableNotifications {
+		webhookURL := cfg.GetDiscordWebhookURL()
+		if webhookURL == "" {
+			log.Printf("Warning: Discord notifications enabled but webhook URL not found in environment variable: %s", cfg.Discord.WebhookURLEnv)
+		}
 	}
 
 	// Setup logging
@@ -43,7 +57,8 @@ func main() {
 	}
 
 	// Initialize queue
-	q := search.NewQueue(cfg.Redis.Address, cfg.Redis.Password, cfg.Redis.DB)
+	redisPassword := cfg.GetRedisPassword()
+	q := search.NewQueue(cfg.Redis.Address, redisPassword, cfg.Redis.DB)
 	defer q.Close()
 
 	// Initialize searcher
