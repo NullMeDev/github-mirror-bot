@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---------- configuration ----------
+# Load .env file if it exists
+if [[ -f ".env" ]]; then
+    set -a  # automatically export all variables
+    source .env
+    set +a
+fi
+
+# Load additional config file if it exists
 CONFIG_FILE="${HOME}/.config/gitbackup/config"
 if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 fi
 
-# Default values
+# Use environment variables with fallback defaults
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 GITHUB_USER="${GITHUB_USER:-NullMeDev}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/github-mirror}"
 PER_PAGE="${PER_PAGE:-100}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-my2tb:github-mirror}"
 LOG_FILE="${LOG_FILE:-$HOME/logs/backup.log}"
-DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
-# ------------------------------------
+DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 
 # Counters for Discord notification
 TOTAL_REPOS=0
@@ -41,7 +47,7 @@ error_exit() {
 
 # Discord notification function
 send_discord_notification() {
-    if [[ -z "$DISCORD_WEBHOOK" ]]; then
+    if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
         return 0
     fi
 
@@ -107,13 +113,14 @@ EOF
     if ! curl -fsSL -X POST \
         -H "Content-Type: application/json" \
         -d "$json_payload" \
-        "$DISCORD_WEBHOOK" >/dev/null 2>&1; then
+        "$DISCORD_WEBHOOK_URL" >/dev/null 2>&1; then
         log "WARNING: Failed to send Discord notification"
     else
         log "Discord notification sent successfully"
     fi
 }
 
+# Rest of the script remains the same...
 # Check dependencies
 command -v curl >/dev/null 2>&1 || error_exit "curl is required"
 command -v jq >/dev/null 2>&1 || error_exit "jq is required"
