@@ -6,7 +6,7 @@ search:
   languages: ["go", "rust", "python", "c"]
   max_repos_per_keyword: 50
   fork_instead_of_clone: true
-  schedule: "hourly"
+  schedule: "0 */1 * * *"  # Every hour (cron format)
 
 filter:
   max_inactive_months: 12
@@ -19,3 +19,12 @@ storage:
 
 discord:
   webhook_url: "https://discord.com/api/webhooks/XXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+redis:
+  address: "127.0.0.1:6379"
+  password: ""
+  db: 0
+
+logging:
+  level: "info"
+  file: "/var/log/github-mirror-bot.log"
