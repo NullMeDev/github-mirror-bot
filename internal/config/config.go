@@ -30,6 +30,15 @@ type Config struct {
 	Discord struct {
 		WebhookURL string `yaml:"webhook_url"`
 	} `yaml:"discord"`
+	Redis struct {
+		Address  string `yaml:"address"`
+		Password string `yaml:"password"`
+		DB       int    `yaml:"db"`
+	} `yaml:"redis"`
+	Logging struct {
+		Level string `yaml:"level"`
+		File  string `yaml:"file"`
+	} `yaml:"logging"`
 }
 
 func Load(path string) (*Config, error) {
@@ -41,6 +50,18 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, err
 	}
+	
+	// Set defaults
+	if c.Redis.Address == "" {
+		c.Redis.Address = "127.0.0.1:6379"
+	}
+	if c.Search.Schedule == "" {
+		c.Search.Schedule = "0 */1 * * *"
+	}
+	if c.Logging.Level == "" {
+		c.Logging.Level = "info"
+	}
+	
 	return &c, nil
 }
 
