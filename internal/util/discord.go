@@ -2,33 +2,47 @@ package util
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 )
 
-// DiscordPayload is the JSON body format Discord expects.
 type DiscordPayload struct {
 	Content string `json:"content"`
 }
 
-// SendWebhook posts a simple text message to the Discord webhook.
-func SendWebhook(webhookURL, message string) error {
+func SendWebhook(ctx context.Context, webhookURL, message string) error {
+	if webhookURL == "" {
+		return fmt.Errorf("webhook URL is empty")
+	}
+
 	payload := DiscordPayload{Content: message}
 	bs, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
-	req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(bs))
+	
+	req, err := http.NewRequestWithContext(ctx, "POST", webhookURL, bytes.NewBuffer(bs))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	_, err = client.Do(req)
-	return err
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send webhook: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
+	}
+
+	return nil
 }
