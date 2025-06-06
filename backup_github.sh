@@ -11,6 +11,23 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 
-for repo in $(gh repo list "$GITHUB_USER" --json nameWithOwner --jq '.[].nameWithOwner'); do
+# List repos via GitHub CLI (requires gh installed and authenticated)
+repos=$(gh repo list "$GITHUB_USER" --json nameWithOwner --jq '.[].nameWithOwner')
+
+for repo in $repos; do
   echo "Backing up $repo..."
-  git
+  repo_dir="$BACKUP_DIR/$(echo $repo | tr '/' '_')"
+  
+  if [[ -d "$repo_dir" ]]; then
+    echo "Repository already cloned at $repo_dir, pulling latest changes"
+    git -C "$repo_dir" pull
+  else
+    git clone --depth=1 "https://github.com/$repo.git" "$repo_dir"
+  fi
+
+  if [[ $? -ne 0 ]]; then
+    echo "Failed to backup $repo"
+  else
+    echo "Successfully backed up $repo"
+  fi
+done
