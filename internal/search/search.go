@@ -1,279 +1,409 @@
 package search
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
+    "context"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "log"
+    "math/rand"
+    "net/http"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "sync"
+    "time"
 
-	"github.com/NullMeDev/github-mirror-bot/internal/config"
-	"github.com/NullMeDev/github-mirror-bot/internal/util"
+    "github.com/yourusername/github-mirror-bot/internal/config"
+    "github.com/yourusername/github-mirror-bot/internal/util"
 )
 
-type Repo struct {
-	FullName    string    `json:"full_name"`
-	SSHURL      string    `json:"ssh_url"`
-	HTMLURL     string    `json:"html_url"`
-	Stars       int       `json:"stargazers_count"`
-	PushedAt    time.Time `json:"pushed_at"`
-	Description string    `json:"description"`
-	Language    string    `json:"language"`
+type Bot struct {
+    cfg         *config.Config
+    ctx         context.Context
+    cancel      context.CancelFunc
+    discord     *util.DiscordWebhook
+    httpClient  *http.Client
+    forkedRepos map[string]time.Time // map[repoFullName]forkDate
+    forkLock    sync.Mutex
+    backupLock  sync.Mutex
+    repoDir     string
 }
 
-type SearchResponse struct {
-	Items []Repo `json:"items"`
-	Total int    `json:"total_count"`
+type githubRepo struct {
+    FullName    string    `json:"full_name"`
+    Description string    `json:"description"`
+    Stars       int       `json:"stargazers_count"`
+    Forks       int       `json:"forks_count"`
+    Language    string    `json:"language"`
+    PushedAt    time.Time `json:"pushed_at"`
+    URL         string    `json:"html_url"`
+    Owner       struct {
+        Login string `json:"login"`
+    } `json:"owner"`
 }
 
-type Searcher struct {
-	cfg         *config.Config
-	token       string
-	bucket      *util.TokenBucket
-	queue       *Queue
-	client      *http.Client
-	foundRepos  []util.RepoInfo
-	startTime   time.Time
+type githubSearchResponse struct {
+    TotalCount int           `json:"total_count"`
+    Items      []githubRepo  `json:"items"`
 }
 
-func NewSearcher(cfg *config.Config, token string, q *Queue) *Searcher {
-	b := util.NewBucket(25, time.Minute) // 25 calls per min < 30 limit
-	b.Start()
-	
-	return &Searcher{
-		cfg:        cfg,
-		token:      token,
-		bucket:     b,
-		queue:      q,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		foundRepos: make([]util.RepoInfo, 0),
-	}
+func NewBot(cfg *config.Config) (*Bot, error) {
+    ctx, cancel := context.WithCancel(context.Background())
+
+    discord := util.NewDiscordWebhookFromURL(cfg.Discord.WebhookURL)
+
+    repoDir := filepath.Join(cfg.Backup.RclonePath, "repos")
+    if err := os.MkdirAll(repoDir, 0755); err != nil {
+        return nil, fmt.Errorf("failed to create repo directory: %w", err)
+    }
+
+    bot := &Bot{
+        cfg:         cfg,
+        ctx:         ctx,
+        cancel:      cancel,
+        discord:     discord,
+        httpClient:  &http.Client{Timeout: 15 * time.Second},
+        forkedRepos: make(map[string]time.Time),
+        repoDir:     repoDir,
+    }
+
+    // Load existing forked repos from cache file if exists
+    bot.loadForkedReposCache()
+
+    return bot, nil
 }
 
-func (s *Searcher) Close() {
-	s.bucket.Stop()
+func (b *Bot) Run() {
+    log.Println("Bot started")
+    searchTicker := time.NewTicker(time.Duration(b.cfg.Github.SearchInterval) * time.Second)
+    backupTicker := time.NewTicker(time.Duration(b.cfg.Backup.SyncInterval) * time.Second)
+
+    defer func() {
+        searchTicker.Stop()
+        backupTicker.Stop()
+        b.saveForkedReposCache()
+        log.Println("Bot stopped")
+    }()
+
+    for {
+        select {
+        case <-b.ctx.Done():
+            log.Println("Received stop signal, exiting Run loop")
+            return
+        case <-searchTicker.C:
+            b.runScrapeAndForkCycle()
+        case <-backupTicker.C:
+            b.runBackupSyncCycle()
+        }
+    }
 }
 
-func (s *Searcher) query(ctx context.Context, qs string, page int) ([]Repo, error) {
-	if err := s.bucket.Take(ctx); err != nil {
-		return nil, fmt.Errorf("rate limit context cancelled: %w", err)
-	}
-
-	endpoint := fmt.Sprintf(
-		"https://api.github.com/search/repositories?q=%s&sort=updated&per_page=100&page=%d",
-		url.QueryEscape(qs), page,
-	)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+s.token)
-	req.Header.Set("User-Agent", "github-mirror-bot/1.0")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
-	}
-
-	var data SearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return data.Items, nil
+func (b *Bot) Stop() {
+    b.cancel()
 }
 
-func (s *Searcher) BuildQueries() []string {
-	var queries []string
-	for _, kw := range s.cfg.Search.Keywords {
-		for _, lang := range s.cfg.Search.Languages {
-			queries = append(queries, fmt.Sprintf("%s language:%s", kw, lang))
-		}
-	}
-	return queries
+func (b *Bot) runScrapeAndForkCycle() {
+    log.Println("Starting scrape and fork cycle")
+
+    repos, err := b.searchRepos()
+    if err != nil {
+        log.Printf("Error searching repos: %v", err)
+        b.discord.SendMessage(fmt.Sprintf("Error searching repos: %v", err))
+        return
+    }
+
+    if len(repos) == 0 {
+        log.Println("No repos found this cycle")
+        return
+    }
+
+    var backedUpCount, forkedCount, failedCount int
+
+    for _, repo := range repos {
+        select {
+        case <-b.ctx.Done():
+            return
+        default:
+        }
+
+        if b.isRepoForked(repo.FullName) {
+            log.Printf("Already forked: %s", repo.FullName)
+            continue
+        }
+
+        // Fork repo
+        err := b.forkRepo(repo)
+        if err != nil {
+            log.Printf("Failed to fork repo %s: %v", repo.FullName, err)
+            failedCount++
+            continue
+        }
+        forkedCount++
+
+        // Clone repo locally
+        err = b.cloneRepo(repo)
+        if err != nil {
+            log.Printf("Failed to clone repo %s: %v", repo.FullName, err)
+            failedCount++
+            continue
+        }
+        backedUpCount++
+    }
+
+    // Send summary message
+    summary := fmt.Sprintf("Scrape and fork cycle complete.\nForked: %d\nBacked up: %d\nFailed: %d", forkedCount, backedUpCount, failedCount)
+    b.discord.SendMessage(summary)
 }
 
-func (s *Searcher) Run(ctx context.Context) error {
-	s.startTime = time.Now()
-	s.foundRepos = make([]util.RepoInfo, 0)
-	
-	log.Println("Starting search cycle...")
-	
-	queries := s.BuildQueries()
-	log.Printf("Built %d search queries", len(queries))
+func (b *Bot) runBackupSyncCycle() {
+    b.backupLock.Lock()
+    defer b.backupLock.Unlock()
 
-	for i, qs := range queries {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+    if !b.cfg.Backup.Enabled {
+        log.Println("Backup is disabled, skipping sync cycle")
+        return
+    }
 
-		log.Printf("Processing query %d/%d: %s", i+1, len(queries), qs)
-		
-		if err := s.processQuery(ctx, qs); err != nil {
-			log.Printf("Error processing query '%s': %v", qs, err)
-			continue
-		}
-	}
+    log.Println("Starting backup sync cycle")
 
-	// Send summary to Discord
-	webhookURL := s.cfg.GetDiscordWebhookURL()
-	if s.cfg.Discord.EnableNotifications && webhookURL != "" {
-		s.sendSummaryToDiscord(ctx, webhookURL)
-	}
-
-	log.Println("Search cycle completed")
-	return nil
+    // Run rclone sync command
+    cmd := exec.Command("rclone", "sync", b.repoDir, b.cfg.Backup.RclonePath, "--progress")
+    output, err := cmd.CombinedOutput()
+    if err != nil {
+        log.Printf("rclone sync failed: %v, output: %s", err, string(output))
+        b.discord.SendMessage(fmt.Sprintf("Backup sync failed: %v", err))
+        return
+    }
+    log.Println("Backup sync complete")
+    b.discord.SendMessage("Backup sync completed successfully.")
 }
 
-func (s *Searcher) processQuery(ctx context.Context, qs string) error {
-	page := 1
-	maxPages := (s.cfg.Search.MaxReposPerKeyword + 99) / 100 // Round up division
+func (b *Bot) searchRepos() ([]githubRepo, error) {
+    var allRepos []githubRepo
+    page := 1
+    maxPages := 3 // Limit pages to avoid rate limits
 
-	for page <= maxPages && page <= 10 { // GitHub limits to 1000 results (10 pages)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
+    for page <= maxPages {
+        select {
+        case <-b.ctx.Done():
+            return nil, errors.New("context cancelled")
+        default:
+        }
 
-		repos, err := s.query(ctx, qs, page)
-		if err != nil {
-			return fmt.Errorf("failed to query page %d: %w", page, err)
-		}
+        query := b.buildSearchQuery()
+        url := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&sort=stars&order=desc&per_page=30&page=%d", query, page)
 
-		if len(repos) == 0 {
-			break
-		}
+        req, err := http.NewRequestWithContext(b.ctx, "GET", url, nil)
+        if err != nil {
+            return nil, err
+        }
+        req.Header.Set("Authorization", "token "+b.cfg.Github.Token)
+        req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-		log.Printf("Processing %d repos from page %d", len(repos), page)
+        resp, err := b.httpClient.Do(req)
+        if err != nil {
+            return nil, err
+        }
+        defer resp.Body.Close()
 
-		for _, r := range repos {
-			if err := s.processRepo(ctx, r); err != nil {
-				log.Printf("Error processing repo %s: %v", r.FullName, err)
-				continue
-			}
-		}
+        if resp.StatusCode == 403 {
+            resetTime, _ := util.ParseGithubRateLimitReset(resp.Header)
+            sleepDur := time.Until(resetTime) + time.Second*5
+            log.Printf("Rate limited. Sleeping for %v", sleepDur)
+            time.Sleep(sleepDur)
+            continue
+        }
 
-		page++
-	}
+        if resp.StatusCode != 200 {
+            return nil, fmt.Errorf("github API error: %s", resp.Status)
+        }
 
-	return nil
+        var result githubSearchResponse
+        if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+            return nil, err
+        }
+
+        if len(result.Items) == 0 {
+            break
+        }
+
+        filtered := b.filterRepos(result.Items)
+        allRepos = append(allRepos, filtered...)
+
+        if len(result.Items) < 30 {
+            break
+        }
+
+        page++
+        // Randomized delay between pages to avoid detection
+        time.Sleep(time.Duration(rand.Intn(10)+5) * time.Second)
+    }
+
+    return allRepos, nil
 }
 
-func (s *Searcher) processRepo(ctx context.Context, r Repo) error {
-	if !ShouldKeep(s.cfg, r.PushedAt, r.Stars) {
-		return nil
-	}
+func (b *Bot) buildSearchQuery() string {
+    stars := fmt.Sprintf("stars:>=%d", b.cfg.Github.MinStars)
+    pushed := fmt.Sprintf("pushed:>=%s", time.Now().AddDate(0, 0, -b.cfg.Github.MaxForkAgeDays).Format("2006-01-02"))
 
-	seen, err := s.queue.Seen(ctx, r.FullName)
-	if err != nil {
-		return fmt.Errorf("failed to check if repo seen: %w", err)
-	}
-	if seen {
-		return nil
-	}
+    langParts := []string{}
+    for _, lang := range b.cfg.Github.Languages {
+        langParts = append(langParts, fmt.Sprintf("language:%s", lang))
+    }
+    langQuery := strings.Join(langParts, " ")
 
-	target := r.SSHURL
-	if s.cfg.Search.ForkInsteadOfClone {
-		target = r.HTMLURL
-	}
+    topicParts := []string{}
+    for _, topic := range b.cfg.Github.Topics {
+        topicParts = append(topicParts, fmt.Sprintf("topic:%s", topic))
+    }
+    topicQuery := strings.Join(topicParts, " ")
 
-	// Create repo info for Discord
-	repoInfo := util.RepoInfo{
-		Name:        r.FullName,
-		Description: s.cleanDescription(r.Description),
-		Stars:       r.Stars,
-		Language:    r.Language,
-		URL:         r.HTMLURL,
-		BackedUp:    false,
-	}
-
-	// Enqueue for mirror/fork
-	if err := s.queue.Enqueue(ctx, target); err != nil {
-		repoInfo.Error = err.Error()
-		s.foundRepos = append(s.foundRepos, repoInfo)
-		return fmt.Errorf("failed to enqueue repo: %w", err)
-	}
-
-	if err := s.queue.Mark(ctx, r.FullName); err != nil {
-		repoInfo.Error = err.Error()
-		s.foundRepos = append(s.foundRepos, repoInfo)
-		return fmt.Errorf("failed to mark repo as seen: %w", err)
-	}
-
-	repoInfo.BackedUp = true
-	s.foundRepos = append(s.foundRepos, repoInfo)
-
-	// Send individual notification if not batching
-	webhookURL := s.cfg.GetDiscordWebhookURL()
-	if s.cfg.Discord.EnableNotifications && webhookURL != "" && !s.cfg.Discord.BatchSummary {
-		if err := util.SendRepoNotification(ctx, webhookURL, repoInfo); err != nil {
-			log.Printf("Failed to send Discord notification: %v", err)
-		}
-	}
-
-	log.Printf("Queued repo: %s (stars: %d)", r.FullName, r.Stars)
-	return nil
+    query := fmt.Sprintf("%s %s %s %s", stars, pushed, langQuery, topicQuery)
+    query = strings.TrimSpace(query)
+    query = strings.ReplaceAll(query, " ", "+")
+    return query
 }
 
-func (s *Searcher) sendSummaryToDiscord(ctx context.Context, webhookURL string) {
-	if !s.cfg.Discord.BatchSummary || len(s.foundRepos) == 0 {
-		return
-	}
-
-	totalBackedUp := 0
-	totalFailed := 0
-	
-	for _, repo := range s.foundRepos {
-		if repo.BackedUp {
-			totalBackedUp++
-		} else {
-			totalFailed++
-		}
-	}
-
-	summary := util.BackupSummary{
-		TotalFound:    len(s.foundRepos),
-		TotalBackedUp: totalBackedUp,
-		TotalFailed:   totalFailed,
-		Repos:         s.foundRepos,
-		Duration:      time.Since(s.startTime),
-	}
-
-	if err := util.SendBackupSummary(ctx, webhookURL, summary, s.cfg.Discord.MaxMessageLength); err != nil {
-		log.Printf("Failed to send Discord summary: %v", err)
-	}
+func (b *Bot) filterRepos(repos []githubRepo) []githubRepo {
+    filtered := []githubRepo{}
+    cutoff := time.Now().AddDate(0, 0, -b.cfg.Github.MaxForkAgeDays)
+    for _, r := range repos {
+        if r.PushedAt.Before(cutoff) {
+            continue
+        }
+        filtered = append(filtered, r)
+    }
+    return filtered
 }
 
-func (s *Searcher) cleanDescription(desc string) string {
-	if desc == "" {
-		return "No description available"
-	}
-	
-	// Clean up common unwanted characters and normalize whitespace
-	cleaned := strings.ReplaceAll(desc, "\n", " ")
-	cleaned = strings.ReplaceAll(cleaned, "\r", " ")
-	cleaned = strings.ReplaceAll(cleaned, "\t", " ")
-	
-	// Remove multiple spaces
-	for strings.Contains(cleaned, "  ") {
-		cleaned = strings.ReplaceAll(cleaned, "  ", " ")
-	}
-	
-	return strings.TrimSpace(cleaned)
+func (b *Bot) isRepoForked(fullName string) bool {
+    b.forkLock.Lock()
+    defer b.forkLock.Unlock()
+    _, exists := b.forkedRepos[fullName]
+    return exists
+}
+
+func (b *Bot) forkRepo(repo githubRepo) error {
+    b.forkLock.Lock()
+    defer b.forkLock.Unlock()
+
+    // Check again inside lock
+    if _, exists := b.forkedRepos[repo.FullName]; exists {
+        return nil
+    }
+
+    forkURL := fmt.Sprintf("https://api.github.com/repos/%s/forks", repo.FullName)
+    reqBody := strings.NewReader("{}")
+    req, err := http.NewRequest("POST", forkURL, reqBody)
+    if err != nil {
+        return err
+    }
+    req.Header.Set("Authorization", "token "+b.cfg.Github.Token)
+    req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+    resp, err := b.httpClient.Do(req)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != 202 {
+        return fmt.Errorf("failed to fork repo, status: %s", resp.Status)
+    }
+
+    // Wait for fork to be available
+    forkFullName := fmt.Sprintf("%s/%s", b.cfg.Github.User, strings.Split(repo.FullName, "/")[1])
+    for i := 0; i < 10; i++ {
+        exists, err := b.checkRepoExists(forkFullName)
+        if err != nil {
+            return err
+        }
+        if exists {
+            b.forkedRepos[repo.FullName] = time.Now()
+            b.saveForkedReposCache()
+            return nil
+        }
+        time.Sleep(5 * time.Second)
+    }
+
+    return errors.New("timeout waiting for fork availability")
+}
+
+func (b *Bot) checkRepoExists(fullName string) (bool, error) {
+    url := fmt.Sprintf("https://api.github.com/repos/%s", fullName)
+    req, err := http.NewRequest("GET", url, nil)
+    if err != nil {
+        return false, err
+    }
+    req.Header.Set("Authorization", "token "+b.cfg.Github.Token)
+    req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+    resp, err := b.httpClient.Do(req)
+    if err != nil {
+        return false, err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode == 200 {
+        return true, nil
+    }
+    if resp.StatusCode == 404 {
+        return false, nil
+    }
+    return false, fmt.Errorf("unexpected status code checking repo: %d", resp.StatusCode)
+}
+
+func (b *Bot) cloneRepo(repo githubRepo) error {
+    targetPath := filepath.Join(b.repoDir, strings.ReplaceAll(repo.FullName, "/", "_"))
+
+    // If directory exists, assume already cloned
+    if _, err := os.Stat(targetPath); err == nil {
+        log.Printf("Repo already cloned at %s", targetPath)
+        return nil
+    }
+
+    cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", b.cfg.Github.User, strings.Split(repo.FullName, "/")[1])
+    cmd := exec.Command("git", "clone", "--depth=1", cloneURL, targetPath)
+
+    out, err := cmd.CombinedOutput()
+    if err != nil {
+        log.Printf("git clone error: %s", string(out))
+        return err
+    }
+
+    log.Printf("Successfully cloned %s", repo.FullName)
+    return nil
+}
+
+// Persist forkedRepos cache to disk for restart resilience
+func (b *Bot) saveForkedReposCache() {
+    b.forkLock.Lock()
+    defer b.forkLock.Unlock()
+
+    cacheFile := filepath.Join(b.repoDir, "forked_repos.json")
+    data, err := json.MarshalIndent(b.forkedRepos, "", "  ")
+    if err != nil {
+        log.Printf("Error marshaling fork cache: %v", err)
+        return
+    }
+    err = os.WriteFile(cacheFile, data, 0644)
+    if err != nil {
+        log.Printf("Error writing fork cache: %v", err)
+    }
+}
+
+func (b *Bot) loadForkedReposCache() {
+    cacheFile := filepath.Join(b.repoDir, "forked_repos.json")
+    data, err := os.ReadFile(cacheFile)
+    if err != nil {
+        log.Printf("No fork cache found, starting fresh")
+        return
+    }
+
+    err = json.Unmarshal(data, &b.forkedRepos)
+    if err != nil {
+        log.Printf("Failed to load fork cache: %v", err)
+    }
 }
