@@ -1,33 +1,20 @@
 github:
-  token_env: GITHUB_TOKEN  # References environment variable
-
-search:
-  keywords: ["proxy", "bot", "keygen", "cracker", "scraper", "crawler", "vulnerability", "exploit"]
-  languages: ["go", "rust", "python", "c"]
-  max_repos_per_keyword: 50
-  fork_instead_of_clone: true
-  schedule: "0 */1 * * *"  # Every hour (cron format)
-
-filter:
-  max_inactive_months: 12
-  min_stars_for_stale: 120
-
-storage:
-  local_dir: /home/gitbackup/github-mirror
-  remote: my2tb:github-mirror
-  offload_after_minutes: 5
+  token: "${GITHUB_TOKEN}"
+  user: "${GITHUB_USER}"
+  min_stars: 50
+  max_fork_age_days: 180
+  languages: ["go", "python"]
+  topics: ["bot", "automation"]
+  search_interval: 3600 # seconds
 
 discord:
-  webhook_url_env: DISCORD_WEBHOOK_URL  # References environment variable
-  enable_notifications: true
-  batch_summary: true
-  max_message_length: 1900
+  webhook_url: "${DISCORD_WEBHOOK_URL}"
 
-redis:
-  address: "127.0.0.1:6379"
-  password_env: REDIS_PASSWORD  # References environment variable
-  db: 0
+backup:
+  rclone_path: "/mnt/google-drive/github-backups"
+  enabled: true
+  sync_interval: 7200 # seconds
 
 logging:
   level: "info"
-  file: "/var/log/github-mirror-bot.log"
+  file: "bot.log"
