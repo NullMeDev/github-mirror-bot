@@ -1,100 +1,104 @@
 package config
 
 import (
-	"os"
-	"time"
+    "errors"
+    "os"
+    "strconv"
+    "strings"
 
-	"gopkg.in/yaml.v3"
+    "gopkg.in/yaml.v2"
+    "io/ioutil"
 )
 
+type GithubConfig struct {
+    Token           string   `yaml:"token"`
+    User            string   `yaml:"user"`
+    MinStars        int      `yaml:"min_stars"`
+    MaxForkAgeDays  int      `yaml:"max_fork_age_days"`
+    Languages       []string `yaml:"languages"`
+    Topics          []string `yaml:"topics"`
+    SearchInterval  int      `yaml:"search_interval"`
+}
+
+type DiscordConfig struct {
+    WebhookURL string `yaml:"webhook_url"`
+}
+
+type BackupConfig struct {
+    RclonePath  string `yaml:"rclone_path"`
+    Enabled     bool   `yaml:"enabled"`
+    SyncInterval int   `yaml:"sync_interval"`
+}
+
+type LoggingConfig struct {
+    Level string `yaml:"level"`
+    File  string `yaml:"file"`
+}
+
 type Config struct {
-	GitHub struct {
-		TokenEnv string `yaml:"token_env"`
-	} `yaml:"github"`
-	Search struct {
-		Keywords             []string `yaml:"keywords"`
-		Languages            []string `yaml:"languages"`
-		MaxReposPerKeyword   int      `yaml:"max_repos_per_keyword"`
-		ForkInsteadOfClone   bool     `yaml:"fork_instead_of_clone"`
-		Schedule             string   `yaml:"schedule"`
-	} `yaml:"search"`
-	Filter struct {
-		MaxInactiveMonths int `yaml:"max_inactive_months"`
-		MinStarsForStale  int `yaml:"min_stars_for_stale"`
-	} `yaml:"filter"`
-	Storage struct {
-		LocalDir            string `yaml:"local_dir"`
-		Remote              string `yaml:"remote"`
-		OffloadAfterMinutes int    `yaml:"offload_after_minutes"`
-	} `yaml:"storage"`
-	Discord struct {
-		WebhookURLEnv       string `yaml:"webhook_url_env"`
-		EnableNotifications bool   `yaml:"enable_notifications"`
-		BatchSummary        bool   `yaml:"batch_summary"`
-		MaxMessageLength    int    `yaml:"max_message_length"`
-	} `yaml:"discord"`
-	Redis struct {
-		Address     string `yaml:"address"`
-		PasswordEnv string `yaml:"password_env"`
-		DB          int    `yaml:"db"`
-	} `yaml:"redis"`
-	Logging struct {
-		Level string `yaml:"level"`
-		File  string `yaml:"file"`
-	} `yaml:"logging"`
+    Github  GithubConfig  `yaml:"github"`
+    Discord DiscordConfig `yaml:"discord"`
+    Backup  BackupConfig  `yaml:"backup"`
+    Logging LoggingConfig `yaml:"logging"`
 }
 
-func Load(path string) (*Config, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
-		return nil, err
-	}
-	
-	// Set defaults
-	if c.Redis.Address == "" {
-		c.Redis.Address = "127.0.0.1:6379"
-	}
-	if c.Search.Schedule == "" {
-		c.Search.Schedule = "0 */1 * * *"
-	}
-	if c.Logging.Level == "" {
-		c.Logging.Level = "info"
-	}
-	if c.Discord.MaxMessageLength == 0 {
-		c.Discord.MaxMessageLength = 1900
-	}
-	if c.GitHub.TokenEnv == "" {
-		c.GitHub.TokenEnv = "GITHUB_TOKEN"
-	}
-	if c.Discord.WebhookURLEnv == "" {
-		c.Discord.WebhookURLEnv = "DISCORD_WEBHOOK_URL"
-	}
-	if c.Redis.PasswordEnv == "" {
-		c.Redis.PasswordEnv = "REDIS_PASSWORD"
-	}
-	
-	return &c, nil
-}
+func LoadConfig(path string) (*Config, error) {
+    data, err := ioutil.ReadFile(path)
+    if err != nil {
+        return nil, err
+    }
+    var cfg Config
+    err = yaml.Unmarshal(data, &cfg)
+    if err != nil {
+        return nil, err
+    }
 
-func (c *Config) MaxInactive() time.Duration {
-	return time.Duration(c.Filter.MaxInactiveMonths) * 30 * 24 * time.Hour
-}
+    // Environment overrides for sensitive data
+    if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+        cfg.Github.Token = token
+    }
+    if user := os.Getenv("GITHUB_USER"); user != "" {
+        cfg.Github.User = user
+    }
+    if webhook := os.Getenv("DISCORD_WEBHOOK_URL"); webhook != "" {
+        cfg.Discord.WebhookURL = webhook
+    }
 
-// GetGitHubToken retrieves the GitHub token from environment
-func (c *Config) GetGitHubToken() string {
-	return os.Getenv(c.GitHub.TokenEnv)
-}
+    // Validate required fields
+    if cfg.Github.Token == "" {
+        return nil, errors.New("github.token is required (set via env GITHUB_TOKEN)")
+    }
+    if cfg.Github.User == "" {
+        return nil, errors.New("github.user is required (set via env GITHUB_USER)")
+    }
+    if cfg.Discord.WebhookURL == "" {
+        return nil, errors.New("discord.webhook_url is required (set via env DISCORD_WEBHOOK_URL)")
+    }
+    if cfg.Backup.Enabled && cfg.Backup.RclonePath == "" {
+        return nil, errors.New("backup.rclone_path is required if backup is enabled")
+    }
 
-// GetDiscordWebhookURL retrieves the Discord webhook URL from environment
-func (c *Config) GetDiscordWebhookURL() string {
-	return os.Getenv(c.Discord.WebhookURLEnv)
-}
+    // Defaults for intervals if missing or zero
+    if cfg.Github.SearchInterval <= 0 {
+        cfg.Github.SearchInterval = 3600
+    }
+    if cfg.Backup.SyncInterval <= 0 {
+        cfg.Backup.SyncInterval = 7200
+    }
+    if cfg.Github.MinStars < 0 {
+        cfg.Github.MinStars = 50
+    }
+    if cfg.Github.MaxForkAgeDays < 0 {
+        cfg.Github.MaxForkAgeDays = 180
+    }
 
-// GetRedisPassword retrieves the Redis password from environment
-func (c *Config) GetRedisPassword() string {
-	return os.Getenv(c.Redis.PasswordEnv)
+    // Normalize languages and topics to lowercase
+    for i, lang := range cfg.Github.Languages {
+        cfg.Github.Languages[i] = strings.ToLower(lang)
+    }
+    for i, topic := range cfg.Github.Topics {
+        cfg.Github.Topics[i] = strings.ToLower(topic)
+    }
+
+    return &cfg, nil
 }
