@@ -1,5 +1,5 @@
 github:
-  token_env: "GITHUB_TOKEN"
+  token_env: "GH_TOKEN"
 
 search:
   keywords:
