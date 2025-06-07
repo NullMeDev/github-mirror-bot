@@ -1,20 +1,48 @@
 github:
-  token: "${GITHUB_TOKEN}"
-  user: "${GITHUB_USER}"
-  min_stars: 50
-  max_fork_age_days: 180
-  languages: ["go", "python"]
-  topics: ["bot", "automation"]
-  search_interval: 3600 # seconds
+  token_env: "GITHUB_TOKEN"
+
+search:
+  keywords:
+    - query: "bot"
+    - query: "scraper"
+    - query: "proxy"
+    - query: "keys"
+    - query: "keygen"
+    - query: "exploit"
+    - query: "vulnerability"
+    - query: "antivirus"
+    - query: "cracked"
+    - query: "cracker"
+    - query: "crawler"
+    - query: "scanner"
+    - query: "bin"
+    - query: "keys"
+    - query: "topic:golang stars:>1000"
+  languages: ["Go", "shell", "python", "C+", "typescript", "rust", ".sh"]
+  max_repos_per_keyword: 5
+  fork_instead_of_clone: false
+  schedule: "0 */6 * * *"
+
+filter:
+  max_inactive_months: 12
+  min_stars_for_stale: 100
+
+storage:
+  local_dir: "backups"
+  remote: "my2tb:"
+  offload_after_minutes: 60
 
 discord:
-  webhook_url: "${DISCORD_WEBHOOK_URL}"
+  webhook_url_env: "DISCORD_WEBHOOK_URL"
+  enable_notifications: true
+  batch_summary: true
+  max_message_length: 1800
 
-backup:
-  rclone_path: "/mnt/google-drive/github-backups"
-  enabled: true
-  sync_interval: 7200 # seconds
+redis:
+  address: "localhost:6379"
+  password_env: "REDIS_PASSWORD"
+  db: 0
 
 logging:
   level: "info"
-  file: "bot.log"
+  file: ""
