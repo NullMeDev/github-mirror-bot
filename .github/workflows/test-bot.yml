@@ -1,0 +1,89 @@
+name: GitHub Mirror Bot Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+
+      - name: Create .env file
+        run: |
+          echo 'CONFIG_PATH=config.yaml' >> .env
+          echo 'GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}' >> .env
+          echo 'DISCORD_WEBHOOK_URL="https://example.com/webhook"' >> .env
+
+      - name: Create config.yaml
+        run: |
+          cat <<EOF > config.yaml
+          github:
+            token_env: "GITHUB_TOKEN"
+
+          search:
+            keywords:
+              - query: "bot"
+              - query: "scraper"
+              - query: "proxy"
+            languages: ["Go", "shell"]
+            max_repos_per_keyword: 5
+            fork_instead_of_clone: false
+            schedule: "0 */6 * * *"
+
+          filter:
+            max_inactive_months: 12
+            min_stars_for_stale: 100
+
+          storage:
+            local_dir: "backups"
+            remote: "testremote"
+            offload_after_minutes: 60
+
+          discord:
+            webhook_url_env: "DISCORD_WEBHOOK_URL"
+            enable_notifications: false
+            batch_summary: false
+            max_message_length: 1800
+
+          redis:
+            address: "localhost:6379"
+            password_env: ""
+            db: 0
+
+          logging:
+            level: "info"
+            file: ""
+          EOF
+
+      - name: Install dependencies
+        run: go mod tidy
+
+      - name: Build bot
+        run: go build -o github-search ./cmd/github-search
+
+      - name: Run bot (dry test)
+        env:
+          CONFIG_PATH: config.yaml
+        run: ./github-search || true
